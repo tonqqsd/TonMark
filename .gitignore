@@ -1,0 +1,20 @@
+.DS_Store
+*.swp
+
+# SwiftPM
+.build/
+native/TonMarkNative/.build/
+.swiftpm/
+native/TonMarkNative/.swiftpm/
+
+# Local app bundles and packaged artifacts
+native/TonMarkNative/dist/
+*.dmg
+
+# Xcode and local IDE state
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# Codex/local workspace state
+.codex/

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TonMark</title>
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="app.css">
+  <script src="vendor/katex/katex.min.js"></script>
+</head>
+<body>
+  <div id="app" class="mode-live">
+    <section class="writer">
+      <main id="live-editor" class="live-editor" aria-label="Markdown Live 编辑区"></main>
+      <textarea id="source" class="source-editor" spellcheck="false" aria-label="Markdown 源码编辑区"></textarea>
+      <article id="preview" class="preview" aria-label="Markdown 预览区"></article>
+    </section>
+  </div>
+
+  <div id="recovery-banner" class="recovery-banner" hidden>
+    <span id="recovery-text">发现未保存草稿</span>
+    <button id="restore-draft" type="button">恢复</button>
+    <button id="discard-draft" type="button">忽略</button>
+  </div>
+
+  <div id="find-panel" class="find-panel" hidden>
+    <input id="find-query" class="find-input" type="search" autocomplete="off" spellcheck="false" aria-label="查找" placeholder="查找">
+    <input id="replace-query" class="find-input replace-input" type="text" autocomplete="off" spellcheck="false" aria-label="替换为" placeholder="替换" hidden>
+    <span id="find-status" class="find-status">0/0</span>
+    <button id="find-prev" type="button" title="上一个" aria-label="上一个">↑</button>
+    <button id="find-next" type="button" title="下一个" aria-label="下一个">↓</button>
+    <button id="replace-one" type="button" title="替换当前" hidden>替换</button>
+    <button id="replace-all" type="button" title="全部替换" hidden>全部</button>
+    <button id="find-close" type="button" title="关闭" aria-label="关闭">×</button>
+  </div>
+
+  <div id="outline-panel" class="outline-panel" hidden>
+    <div class="outline-head">
+      <strong>大纲</strong>
+      <button id="outline-close" type="button" title="关闭" aria-label="关闭">×</button>
+    </div>
+    <input id="outline-query" class="outline-input" type="search" autocomplete="off" spellcheck="false" aria-label="文档大纲" placeholder="搜索标题">
+    <div id="outline-list" class="outline-list" role="listbox" aria-label="文档标题"></div>
+    <div id="outline-status" class="outline-status">0 个标题</div>
+  </div>
+
+  <div id="settings-panel" class="settings-panel" hidden>
+    <div class="settings-head">
+      <strong>偏好设置</strong>
+      <button id="settings-close" type="button" title="关闭" aria-label="关闭">×</button>
+    </div>
+    <label class="settings-row">
+      <span>主题</span>
+      <select id="settings-theme">
+        <option value="system">跟随系统</option>
+        <option value="light">浅色</option>
+        <option value="dark">深色</option>
+        <option value="sepia">暖纸</option>
+      </select>
+    </label>
+    <label class="settings-row">
+      <span>字体大小</span>
+      <input id="settings-font-size" type="range" min="14" max="22" step="1">
+      <output id="settings-font-size-value">16px</output>
+    </label>
+    <label class="settings-row">
+      <span>行高</span>
+      <input id="settings-line-height" type="range" min="1.40" max="2.00" step="0.05">
+      <output id="settings-line-height-value">1.72</output>
+    </label>
+    <label class="settings-row">
+      <span>编辑宽度</span>
+      <select id="settings-width">
+        <option value="narrow">窄</option>
+        <option value="normal">标准</option>
+        <option value="wide">宽</option>
+        <option value="full">铺满</option>
+      </select>
+    </label>
+    <label class="settings-row settings-check-row">
+      <span>专注模式</span>
+      <input id="settings-focus-mode" type="checkbox">
+    </label>
+    <label class="settings-row settings-check-row">
+      <span>打字机模式</span>
+      <input id="settings-typewriter-mode" type="checkbox">
+    </label>
+    <div class="settings-actions">
+      <button id="settings-reset" type="button">恢复默认</button>
+    </div>
+  </div>
+
+  <footer id="status-bar" class="status-bar" aria-label="文档状态">
+    <span id="status-mode">Live</span>
+    <span id="status-count">0 字 · 0 词</span>
+    <span id="status-position">行 1，列 1</span>
+    <span id="status-save">已保存</span>
+  </footer>
+
+  <div id="toast" class="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
