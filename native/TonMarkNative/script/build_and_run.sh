@@ -4,10 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DISPLAY_NAME="TonMark"
 EXECUTABLE_NAME="TonMarkNative"
+CONFIGURATION="debug"
 APP_DIR="$ROOT/dist/$APP_DISPLAY_NAME.app"
-EXECUTABLE="$ROOT/.build/debug/$EXECUTABLE_NAME"
 WEB_ROOT="$ROOT/Resources/Web"
 ICON_FILE="$ROOT/Resources/AppIcon.icns"
+TONMARK_VERSION="${TONMARK_VERSION:-0.2.0}"
+TONMARK_BUILD_NUMBER="${TONMARK_BUILD_NUMBER:-2}"
 LAUNCH_AFTER_BUILD=true
 VERIFY_AFTER_LAUNCH=false
 
@@ -19,23 +21,34 @@ for arg in "$@"; do
     --verify)
       VERIFY_AFTER_LAUNCH=true
       ;;
+    --release)
+      CONFIGURATION="release"
+      ;;
+    --debug)
+      CONFIGURATION="debug"
+      ;;
   esac
 done
 
 pkill -x "$EXECUTABLE_NAME" >/dev/null 2>&1 || true
 
 cd "$ROOT"
-swift build
+if [[ "$CONFIGURATION" == "release" ]]; then
+  swift build -c release
+else
+  swift build
+fi
 
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources/Web"
+EXECUTABLE="$ROOT/.build/$CONFIGURATION/$EXECUTABLE_NAME"
 cp "$EXECUTABLE" "$APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
 ditto "$WEB_ROOT" "$APP_DIR/Contents/Resources/Web"
 if [[ -f "$ICON_FILE" ]]; then
   cp "$ICON_FILE" "$APP_DIR/Contents/Resources/AppIcon.icns"
 fi
 
-cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
+cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -53,9 +66,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>$TONMARK_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$TONMARK_BUILD_NUMBER</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
   <key>NSPrincipalClass</key>
@@ -64,6 +77,69 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <true/>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.productivity</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>md</string>
+        <string>markdown</string>
+        <string>mdown</string>
+        <string>mkd</string>
+      </array>
+      <key>CFBundleTypeIconFile</key>
+      <string>AppIcon</string>
+      <key>CFBundleTypeName</key>
+      <string>Markdown Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Editor</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.markdown</string>
+        <string>net.daringfireball.markdown</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Folder</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.folder</string>
+      </array>
+    </dict>
+  </array>
+  <key>UTImportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.plain-text</string>
+        <string>public.text</string>
+      </array>
+      <key>UTTypeDescription</key>
+      <string>Markdown Document</string>
+      <key>UTTypeIdentifier</key>
+      <string>net.daringfireball.markdown</string>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>md</string>
+          <string>markdown</string>
+          <string>mdown</string>
+          <string>mkd</string>
+        </array>
+        <key>public.mime-type</key>
+        <string>text/markdown</string>
+      </dict>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST

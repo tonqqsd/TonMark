@@ -9,6 +9,7 @@ private let workspaceNodePasteboardType = NSPasteboard.PasteboardType("io.tonmar
 
 final class EditorWindowController: NSWindowController, WKScriptMessageHandler, WKNavigationDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSToolbarDelegate, NSSearchFieldDelegate, NSMenuDelegate, NSWindowDelegate {
     var recentFilesDidChange: (() -> Void)?
+    var recentWorkspacesDidChange: (() -> Void)?
 
     private let webView: EditorWebView
     private let assetSchemeHandler = TonMarkAssetSchemeHandler()
@@ -23,6 +24,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
     private let sidebarStatusField = NSTextField(labelWithString: "打开文件夹后显示 Markdown 文件")
     private let searchField = NSSearchField()
     private let sortPopup = NSPopUpButton()
+    private let sortDirectionButton = NSButton(title: "升序", target: nil, action: nil)
     private let fileOutline = WorkspaceOutlineView()
     private var sidebarWidthConstraint: NSLayoutConstraint?
     private var sidebarResizeHandleWidthConstraint: NSLayoutConstraint?
@@ -44,7 +46,9 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
     private var isClosingAfterUnsavedCheck = false
     private var isSelectingWorkspaceContextItem = false
     private var isRestoringWorkspaceExpansion = false
+    private var isEditorReady = false
     private var didRestoreLastOpenFile = false
+    private var pendingExternalOpenURLs: [URL] = []
     private var workspaceEventStream: FSEventStreamRef?
     private var workspaceRefreshWorkItem: DispatchWorkItem?
     private var workspaceRefreshGeneration = 0
@@ -63,8 +67,10 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
     private var sidebarResizeStartMouseX: CGFloat = 0
     private var sidebarResizeStartConstraintWidth: CGFloat = 0
     private let recentFilesKey = "TonMark.RecentFiles"
+    private let recentWorkspacesKey = "TonMark.RecentWorkspaces"
     private let sidebarWidthKey = "TonMark.SidebarWidth"
     private let workspaceSortKey = "TonMark.WorkspaceSortMode"
+    private let workspaceSortDirectionKey = "TonMark.WorkspaceSortDirection"
     private let lastWorkspaceKey = "TonMark.LastWorkspace"
     private let lastOpenFileKey = "TonMark.LastOpenFile"
     private let expandedWorkspaceFoldersKey = "TonMark.ExpandedWorkspaceFolders"
@@ -133,6 +139,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         webView.navigationDelegate = self
         buildLayout()
         restoreLastWorkspace()
+        syncDockRecentDocumentsWithWorkspaces()
         configureToolbar(for: window)
         installTitlebarDragRegion()
         installTitlebarDragMonitor()
@@ -179,7 +186,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         panel.canChooseFiles = true
         panel.beginSheetModal(for: window!) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            self?.loadFile(url)
+            self?.openDocumentURLAfterUnsaved(url)
         }
     }
 
@@ -204,13 +211,38 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
                 return
             }
 
-            self.loadFile(url)
+            self.openDocumentURLAfterUnsaved(url)
+        }
+    }
+
+    func openRecentWorkspace(_ path: String) {
+        continueAfterUnsavedChanges(actionName: "打开最近文件夹") { [weak self] in
+            guard let self else { return }
+            let url = URL(fileURLWithPath: path, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                self.removeRecentWorkspace(path)
+                self.sendToWeb(["type": "toast", "message": "最近文件夹不存在"])
+                return
+            }
+
+            self.setWorkspaceURL(url, remember: true)
         }
     }
 
     func clearRecentFiles() {
         UserDefaults.standard.removeObject(forKey: recentFilesKey)
         recentFilesDidChange?()
+    }
+
+    func clearRecentWorkspaces() {
+        UserDefaults.standard.removeObject(forKey: recentWorkspacesKey)
+        syncDockRecentDocumentsWithWorkspaces()
+        recentWorkspacesDidChange?()
+    }
+
+    func syncDockRecentWorkspaces() {
+        syncDockRecentDocumentsWithWorkspaces()
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -224,6 +256,52 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
             let parent = url.deletingLastPathComponent().lastPathComponent
             let title = parent.isEmpty ? url.lastPathComponent : "\(url.lastPathComponent) - \(parent)"
             return (title: title, path: path)
+        }
+    }
+
+    func recentWorkspaceMenuItems() -> [(title: String, path: String)] {
+        recentWorkspacePaths().compactMap { path in
+            let url = URL(fileURLWithPath: path, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                return nil
+            }
+
+            let parent = url.deletingLastPathComponent().lastPathComponent
+            let title = parent.isEmpty ? url.lastPathComponent : "\(url.lastPathComponent) - \(parent)"
+            return (title: title, path: path)
+        }
+    }
+
+    func openExternalURLs(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        guard isEditorReady else {
+            pendingExternalOpenURLs.append(contentsOf: urls)
+            return
+        }
+
+        continueAfterUnsavedChanges(actionName: "打开外部项目") { [weak self] in
+            guard let self else { return }
+            let validURLs = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
+            guard let firstURL = validURLs.first else {
+                self.sendToWeb(["type": "toast", "message": "文件不存在"])
+                return
+            }
+
+            validURLs.dropFirst().forEach { url in
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                    self.rememberRecentWorkspace(url)
+                } else {
+                    self.rememberRecentFile(url)
+                }
+            }
+
+            if validURLs.count > 1 {
+                self.sendToWeb(["type": "toast", "message": "当前窗口已打开第一个文件，其余已加入最近使用"])
+            }
+
+            self.openExternalURLAfterUnsaved(firstURL)
         }
     }
 
@@ -518,9 +596,16 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
 
         switch type {
         case "ready":
+            isEditorReady = true
             sendSidebarVisibilityState()
             refreshWorkspaceFiles(showToast: false)
-            restoreLastOpenFileIfNeeded()
+            if pendingExternalOpenURLs.isEmpty {
+                restoreLastOpenFileIfNeeded()
+            } else {
+                let urls = pendingExternalOpenURLs
+                pendingExternalOpenURLs.removeAll()
+                openExternalURLs(urls)
+            }
         case "dirtyChanged":
             isDocumentDirty = payload["dirty"] as? Bool ?? false
         case "themeChanged":
@@ -796,6 +881,33 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
             selectWorkspaceFile(relativePath: relativePath, url: url)
         } catch {
             sendToWeb(["type": "toast", "message": "打开失败"])
+        }
+    }
+
+    private func openDocumentURLAfterUnsaved(_ url: URL) {
+        let standardizedURL = url.standardizedFileURL
+        if let workspaceURL, isURL(standardizedURL, insideOrSame: workspaceURL) {
+            loadFile(standardizedURL, relativePath: relativeWorkspacePath(for: standardizedURL))
+            return
+        }
+
+        let documentFolder = standardizedURL.deletingLastPathComponent()
+        setWorkspaceURL(documentFolder, remember: true, showToast: false)
+        loadFile(standardizedURL, relativePath: relativeWorkspacePath(for: standardizedURL))
+    }
+
+    private func openExternalURLAfterUnsaved(_ url: URL) {
+        let standardizedURL = url.standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: standardizedURL.path, isDirectory: &isDirectory) else {
+            sendToWeb(["type": "toast", "message": "文件不存在"])
+            return
+        }
+
+        if isDirectory.boolValue {
+            setWorkspaceURL(standardizedURL, remember: true)
+        } else {
+            openDocumentURLAfterUnsaved(standardizedURL)
         }
     }
 
@@ -1197,20 +1309,62 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         UserDefaults.standard.stringArray(forKey: recentFilesKey) ?? []
     }
 
+    private func recentWorkspacePaths() -> [String] {
+        UserDefaults.standard.stringArray(forKey: recentWorkspacesKey) ?? []
+    }
+
     private func rememberRecentFile(_ url: URL) {
         let path = url.path
         var paths = recentFilePaths().filter { $0 != path && FileManager.default.fileExists(atPath: $0) }
         paths.insert(path, at: 0)
         paths = Array(paths.prefix(12))
         UserDefaults.standard.set(paths, forKey: recentFilesKey)
-        NSDocumentController.shared.noteNewRecentDocumentURL(url)
         recentFilesDidChange?()
+    }
+
+    private func rememberRecentWorkspace(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        var paths = recentWorkspacePaths().filter { existingPath in
+            guard existingPath != path else { return false }
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: existingPath, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
+        paths.insert(path, at: 0)
+        paths = Array(paths.prefix(12))
+        UserDefaults.standard.set(paths, forKey: recentWorkspacesKey)
+        syncDockRecentDocumentsWithWorkspaces()
+        recentWorkspacesDidChange?()
     }
 
     private func removeRecentFile(_ path: String) {
         let paths = recentFilePaths().filter { $0 != path }
         UserDefaults.standard.set(paths, forKey: recentFilesKey)
         recentFilesDidChange?()
+    }
+
+    private func removeRecentWorkspace(_ path: String) {
+        let paths = recentWorkspacePaths().filter { $0 != path }
+        UserDefaults.standard.set(paths, forKey: recentWorkspacesKey)
+        syncDockRecentDocumentsWithWorkspaces()
+        recentWorkspacesDidChange?()
+    }
+
+    private func syncDockRecentDocumentsWithWorkspaces() {
+        NSDocumentController.shared.clearRecentDocuments(nil)
+        let validPaths = recentWorkspacePaths().filter { path in
+            let url = URL(fileURLWithPath: path, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
+        if validPaths != recentWorkspacePaths() {
+            UserDefaults.standard.set(validPaths, forKey: recentWorkspacesKey)
+            recentWorkspacesDidChange?()
+        }
+        UserDefaults.standard.synchronize()
+        validPaths.reversed().forEach { path in
+            NSDocumentController.shared.noteNewRecentDocumentURL(URL(fileURLWithPath: path, isDirectory: true))
+        }
+        UserDefaults.standard.synchronize()
     }
 
     private func removeRecentFiles(under url: URL) {
@@ -1225,7 +1379,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
     }
 
     private func collectWorkspaceContents(in root: URL) -> WorkspaceContents {
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .contentModificationDateKey]
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .creationDateKey, .contentModificationDateKey]
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: keys,
@@ -1251,6 +1405,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
                         name: url.lastPathComponent,
                         relativePath: relative,
                         url: url,
+                        createdAt: values?.creationDate ?? values?.contentModificationDate ?? .distantPast,
                         modifiedAt: values?.contentModificationDate ?? .distantPast
                     ))
                 }
@@ -1261,8 +1416,9 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
             let ext = url.pathExtension.lowercased()
             guard ["md", "markdown", "mdown", "mkd", "txt"].contains(ext) else { continue }
             let relative = relativeWorkspacePath(from: root, to: url)
+            let createdAt = values?.creationDate ?? values?.contentModificationDate ?? .distantPast
             let modifiedAt = values?.contentModificationDate ?? .distantPast
-            files.append(WorkspaceFile(name: url.lastPathComponent, relativePath: relative, url: url, modifiedAt: modifiedAt))
+            files.append(WorkspaceFile(name: url.lastPathComponent, relativePath: relative, url: url, createdAt: createdAt, modifiedAt: modifiedAt))
         }
 
         return WorkspaceContents(
@@ -1617,6 +1773,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         openWorkspaceButton.translatesAutoresizingMaskIntoConstraints = false
         searchField.translatesAutoresizingMaskIntoConstraints = false
         sortPopup.translatesAutoresizingMaskIntoConstraints = false
+        sortDirectionButton.translatesAutoresizingMaskIntoConstraints = false
         workspaceNameField.translatesAutoresizingMaskIntoConstraints = false
         sidebarStatusField.translatesAutoresizingMaskIntoConstraints = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -1636,7 +1793,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         searchField.controlSize = .small
         searchField.font = .systemFont(ofSize: 12)
 
-        configureSortPopup()
+        configureSortControls()
 
         workspaceNameField.lineBreakMode = .byTruncatingMiddle
         workspaceNameField.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -1700,6 +1857,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         contentView.addSubview(openWorkspaceButton)
         contentView.addSubview(searchField)
         contentView.addSubview(sortPopup)
+        contentView.addSubview(sortDirectionButton)
         contentView.addSubview(workspaceNameField)
         contentView.addSubview(sidebarStatusField)
         contentView.addSubview(scrollView)
@@ -1733,9 +1891,14 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
             workspaceNameField.topAnchor.constraint(equalTo: sortPopup.bottomAnchor, constant: 10),
 
             sortPopup.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            sortPopup.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            sortPopup.trailingAnchor.constraint(equalTo: sortDirectionButton.leadingAnchor, constant: -6),
             sortPopup.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 6),
             sortPopup.heightAnchor.constraint(equalToConstant: 26),
+
+            sortDirectionButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            sortDirectionButton.centerYAnchor.constraint(equalTo: sortPopup.centerYAnchor),
+            sortDirectionButton.widthAnchor.constraint(equalToConstant: 54),
+            sortDirectionButton.heightAnchor.constraint(equalToConstant: 26),
 
             sidebarStatusField.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             sidebarStatusField.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
@@ -2012,7 +2175,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         return item
     }
 
-    private func configureSortPopup() {
+    private func configureSortControls() {
         sortPopup.removeAllItems()
         sortPopup.controlSize = .small
         sortPopup.bezelStyle = .rounded
@@ -2026,11 +2189,51 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         }
 
         sortPopup.selectItem(withTitle: currentWorkspaceSortMode().title)
+
+        sortDirectionButton.bezelStyle = .rounded
+        sortDirectionButton.controlSize = .small
+        sortDirectionButton.font = .systemFont(ofSize: 12)
+        sortDirectionButton.target = self
+        sortDirectionButton.action = #selector(toggleWorkspaceSortDirection(_:))
+        updateSortDirectionButtonTitle()
     }
 
     private func currentWorkspaceSortMode() -> WorkspaceSortMode {
         let rawValue = UserDefaults.standard.string(forKey: workspaceSortKey) ?? WorkspaceSortMode.name.rawValue
-        return WorkspaceSortMode(rawValue: rawValue) ?? .name
+        if let mode = WorkspaceSortMode(rawValue: rawValue) {
+            return mode
+        }
+
+        switch rawValue {
+        case "name", "path", "nameAscending", "nameDescending":
+            return .name
+        case "createdAscending", "createdDescending":
+            return .created
+        case "modifiedNewest", "modifiedOldest", "modifiedAscending", "modifiedDescending":
+            return .modified
+        default:
+            return .name
+        }
+    }
+
+    private func currentWorkspaceSortDirection() -> WorkspaceSortDirection {
+        if let rawValue = UserDefaults.standard.string(forKey: workspaceSortDirectionKey),
+           let direction = WorkspaceSortDirection(rawValue: rawValue) {
+            return direction
+        }
+
+        switch UserDefaults.standard.string(forKey: workspaceSortKey) {
+        case "nameDescending", "createdDescending", "modifiedNewest", "modifiedDescending":
+            return .descending
+        default:
+            return .ascending
+        }
+    }
+
+    private func updateSortDirectionButtonTitle() {
+        let direction = currentWorkspaceSortDirection()
+        sortDirectionButton.title = direction.title
+        sortDirectionButton.toolTip = direction == .ascending ? "切换为降序" : "切换为升序"
     }
 
     private func restoreLastWorkspace() {
@@ -2044,9 +2247,12 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
             return
         }
 
-        workspaceURL = URL(fileURLWithPath: path, isDirectory: true)
+        workspaceURL = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
         favoriteWorkspacePaths = savedFavoriteWorkspacePaths(for: workspaceURL)
         workspaceNameField.stringValue = workspaceURL?.lastPathComponent ?? "未打开文件夹"
+        if let workspaceURL {
+            rememberRecentWorkspace(workspaceURL)
+        }
         startWorkspaceWatcher(for: URL(fileURLWithPath: path, isDirectory: true))
     }
 
@@ -2067,14 +2273,16 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         loadFile(url, relativePath: relativeWorkspacePath(for: url))
     }
 
-    private func setWorkspaceURL(_ url: URL, remember: Bool) {
-        workspaceURL = url
-        favoriteWorkspacePaths = savedFavoriteWorkspacePaths(for: url)
+    private func setWorkspaceURL(_ url: URL, remember: Bool, showToast: Bool = true) {
+        let standardizedURL = url.standardizedFileURL
+        workspaceURL = standardizedURL
+        favoriteWorkspacePaths = savedFavoriteWorkspacePaths(for: standardizedURL)
         if remember {
-            UserDefaults.standard.set(url.path, forKey: lastWorkspaceKey)
+            UserDefaults.standard.set(standardizedURL.path, forKey: lastWorkspaceKey)
+            rememberRecentWorkspace(standardizedURL)
         }
-        startWorkspaceWatcher(for: url)
-        refreshWorkspaceFiles()
+        startWorkspaceWatcher(for: standardizedURL)
+        refreshWorkspaceFiles(showToast: showToast)
     }
 
     private func startWorkspaceWatcher(for url: URL) {
@@ -2263,9 +2471,12 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         var folderByPath: [String: WorkspaceNode] = [:]
 
         @discardableResult
-        func ensureFolder(relativePath: String, url: URL?, modifiedAt: Date?) -> WorkspaceNode? {
+        func ensureFolder(relativePath: String, url: URL?, createdAt: Date?, modifiedAt: Date?) -> WorkspaceNode? {
             guard !relativePath.isEmpty else { return nil }
             if let existingFolder = folderByPath[relativePath] {
+                if let createdAt, existingFolder.createdAt == .distantPast || createdAt < existingFolder.createdAt {
+                    existingFolder.createdAt = createdAt
+                }
                 if let modifiedAt, existingFolder.latestModificationDate == nil || modifiedAt > existingFolder.latestModificationDate! {
                     existingFolder.latestModificationDate = modifiedAt
                 }
@@ -2278,10 +2489,12 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
             let parent = ensureFolder(
                 relativePath: parentPath,
                 url: workspaceURL?.appendingPathComponent(parentPath, isDirectory: true),
+                createdAt: nil,
                 modifiedAt: nil
             )
             let folderURL = url ?? workspaceURL?.appendingPathComponent(relativePath, isDirectory: true)
             let folder = WorkspaceNode(name: folderName, relativePath: relativePath, url: folderURL, file: nil)
+            folder.createdAt = createdAt ?? .distantPast
             folder.latestModificationDate = modifiedAt
             folder.isFavorite = favoriteWorkspacePaths.contains(relativePath)
             folder.parent = parent
@@ -2299,7 +2512,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         }
 
         for folder in folders {
-            _ = ensureFolder(relativePath: folder.relativePath, url: folder.url, modifiedAt: folder.modifiedAt)
+            _ = ensureFolder(relativePath: folder.relativePath, url: folder.url, createdAt: folder.createdAt, modifiedAt: folder.modifiedAt)
         }
 
         for file in files {
@@ -2309,6 +2522,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
             let parent = ensureFolder(
                 relativePath: parentPath,
                 url: workspaceURL?.appendingPathComponent(parentPath, isDirectory: true),
+                createdAt: nil,
                 modifiedAt: nil
             )
 
@@ -2342,6 +2556,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
 
     private func sortWorkspaceNodes(_ nodes: inout [WorkspaceNode]) {
         let mode = currentWorkspaceSortMode()
+        let direction = currentWorkspaceSortDirection()
         nodes.sort { lhs, rhs in
             if lhs.isFavorite != rhs.isFavorite {
                 return lhs.isFavorite && !rhs.isFavorite
@@ -2349,7 +2564,7 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
             if lhs.isFolder != rhs.isFolder {
                 return lhs.isFolder && !rhs.isFolder
             }
-            return compareWorkspaceNode(lhs, rhs, mode: mode)
+            return compareWorkspaceNode(lhs, rhs, mode: mode, direction: direction)
         }
 
         for node in nodes where node.isFolder {
@@ -2357,31 +2572,37 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         }
     }
 
-    private func compareWorkspaceNode(_ lhs: WorkspaceNode, _ rhs: WorkspaceNode, mode: WorkspaceSortMode) -> Bool {
+    private func compareWorkspaceNode(_ lhs: WorkspaceNode, _ rhs: WorkspaceNode, mode: WorkspaceSortMode, direction: WorkspaceSortDirection) -> Bool {
+        let comparison: ComparisonResult
         switch mode {
         case .name:
-            return compareWorkspaceText(lhs.name, rhs.name)
-        case .path:
-            return compareWorkspaceText(lhs.relativePath, rhs.relativePath)
-        case .modifiedNewest:
-            let lhsDate = lhs.latestModificationDate ?? .distantPast
-            let rhsDate = rhs.latestModificationDate ?? .distantPast
-            if lhsDate != rhsDate {
-                return lhsDate > rhsDate
-            }
-            return compareWorkspaceText(lhs.name, rhs.name)
-        case .modifiedOldest:
-            let lhsDate = lhs.latestModificationDate ?? .distantFuture
-            let rhsDate = rhs.latestModificationDate ?? .distantFuture
-            if lhsDate != rhsDate {
-                return lhsDate < rhsDate
-            }
-            return compareWorkspaceText(lhs.name, rhs.name)
+            comparison = lhs.name.localizedStandardCompare(rhs.name)
+        case .created:
+            comparison = compareDate(lhs.createdAt, rhs.createdAt, fallbackLHS: lhs.name, fallbackRHS: rhs.name)
+        case .modified:
+            comparison = compareDate(lhs.latestModificationDate ?? .distantPast, rhs.latestModificationDate ?? .distantPast, fallbackLHS: lhs.name, fallbackRHS: rhs.name)
+        }
+
+        switch direction {
+        case .ascending:
+            return comparison == .orderedAscending
+        case .descending:
+            return comparison == .orderedDescending
         }
     }
 
     private func compareWorkspaceText(_ lhs: String, _ rhs: String) -> Bool {
         lhs.localizedStandardCompare(rhs) == .orderedAscending
+    }
+
+    private func compareDate(_ lhs: Date, _ rhs: Date, fallbackLHS: String, fallbackRHS: String) -> ComparisonResult {
+        if lhs < rhs {
+            return .orderedAscending
+        }
+        if lhs > rhs {
+            return .orderedDescending
+        }
+        return fallbackLHS.localizedStandardCompare(fallbackRHS)
     }
 
     private func expandWorkspaceTreeForSearch(_ query: String) {
@@ -3151,6 +3372,13 @@ final class EditorWindowController: NSWindowController, WKScriptMessageHandler, 
         applyWorkspaceFilter()
     }
 
+    @objc private func toggleWorkspaceSortDirection(_ sender: NSButton) {
+        let newDirection: WorkspaceSortDirection = currentWorkspaceSortDirection() == .ascending ? .descending : .ascending
+        UserDefaults.standard.set(newDirection.rawValue, forKey: workspaceSortDirectionKey)
+        updateSortDirectionButtonTitle()
+        applyWorkspaceFilter()
+    }
+
     @objc private func toolbarToggleSidebar(_ sender: Any?) {
         toggleFileTree()
     }
@@ -3240,6 +3468,7 @@ private struct WorkspaceFile {
     let name: String
     let relativePath: String
     let url: URL
+    let createdAt: Date
     let modifiedAt: Date
 }
 
@@ -3267,6 +3496,7 @@ private struct WorkspaceFolder {
     let name: String
     let relativePath: String
     let url: URL
+    let createdAt: Date
     let modifiedAt: Date
 }
 
@@ -4422,6 +4652,7 @@ private final class WorkspaceNode {
     let url: URL?
     let file: WorkspaceFile?
     var children: [WorkspaceNode] = []
+    var createdAt: Date
     var latestModificationDate: Date?
     var isFavorite = false
     weak var parent: WorkspaceNode?
@@ -4431,6 +4662,7 @@ private final class WorkspaceNode {
         self.relativePath = relativePath
         self.url = url
         self.file = file
+        self.createdAt = file?.createdAt ?? .distantPast
         self.latestModificationDate = file?.modifiedAt
     }
 
@@ -5014,20 +5246,31 @@ private enum ToolbarIdentifiers {
 
 private enum WorkspaceSortMode: String, CaseIterable {
     case name
-    case path
-    case modifiedNewest
-    case modifiedOldest
+    case created
+    case modified
 
     var title: String {
         switch self {
         case .name:
             return "按名称排序"
-        case .path:
-            return "按路径排序"
-        case .modifiedNewest:
-            return "按最近修改排序"
-        case .modifiedOldest:
-            return "按最早修改排序"
+        case .created:
+            return "按创建时间排序"
+        case .modified:
+            return "按修改时间排序"
+        }
+    }
+}
+
+private enum WorkspaceSortDirection: String {
+    case ascending
+    case descending
+
+    var title: String {
+        switch self {
+        case .ascending:
+            return "升序"
+        case .descending:
+            return "降序"
         }
     }
 }

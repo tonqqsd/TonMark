@@ -1358,14 +1358,23 @@ function insertMarkdownAtCursor(markdown) {
 
 function handleContextMenu(event) {
   const target = event.target.nodeType === Node.ELEMENT_NODE ? event.target : event.target.parentElement;
-  const opened = app.classList.contains('mode-live')
-    ? showEditorContextMenuAt(event.clientX, event.clientY, target)
-    : showGeneralContextMenuAt(event.clientX, event.clientY, target);
+  const opened = showModeContextMenuAt(event.clientX, event.clientY, target);
 
   if (opened) {
     event.preventDefault();
     event.stopPropagation();
   }
+}
+
+function showModeContextMenuAt(x, y, target) {
+  if (app.classList.contains('mode-live')) {
+    return showLiveContextMenuAt(x, y, target);
+  }
+  return showGeneralContextMenuAt(x, y, target);
+}
+
+function showLiveContextMenuAt(x, y, target) {
+  return showEditorContextMenuAt(x, y, target) || showGeneralContextMenuAt(x, y, target);
 }
 
 function showEditorContextMenuAt(x, y, target) {
@@ -1384,6 +1393,7 @@ function showEditorContextMenuAt(x, y, target) {
   const type = blockType(block.raw);
   const cell = target?.closest('th, td, .table-cell');
   let items;
+  const shouldRenderActiveBlock = activeBlockId !== blockId;
 
   if (type === 'table' && cell) {
     const row = tableCellRow(cell);
@@ -1396,7 +1406,9 @@ function showEditorContextMenuAt(x, y, target) {
     items = blockContextItems(blockId);
   }
 
-  renderLiveEditor();
+  if (shouldRenderActiveBlock) {
+    renderLiveEditor();
+  }
   showContextMenu(x, y, items);
   return true;
 }
@@ -1404,40 +1416,89 @@ function showEditorContextMenuAt(x, y, target) {
 function showGeneralContextMenuAt(x, y, target) {
   if (!app.contains(target)) return false;
 
-  const selection = window.getSelection()?.toString() || '';
-  const isSource = app.classList.contains('mode-source');
-  const canEdit = isSource;
-  const items = [];
+  const mode = currentMode();
+  const selection = selectedTextForContextMenu();
+  const items = generalContextItems(mode, selection);
 
-  if (canEdit) {
-    items.push(
-      { label: '剪切', action: () => document.execCommand('cut') },
-      { label: '复制', action: () => document.execCommand('copy') },
-      { label: '粘贴', action: () => document.execCommand('paste') }
-    );
-  } else {
-    items.push({ label: selection ? '复制选中内容' : '复制', action: () => document.execCommand('copy') });
+  showContextMenu(x, y, items);
+  return true;
+}
+
+function selectedTextForContextMenu() {
+  if (document.activeElement === source) {
+    return source.value.slice(source.selectionStart ?? 0, source.selectionEnd ?? 0);
+  }
+  return window.getSelection()?.toString() || '';
+}
+
+function generalContextItems(mode, selection) {
+  if (mode === 'mode-source') {
+    return [
+      ...textEditContextItems(),
+      { label: '全选', action: () => selectCurrentModeContent() },
+      { separator: true },
+      { label: '查找', action: () => showFind(false) },
+      { label: '替换', action: () => showFind(true) },
+      { separator: true },
+      ...modeSwitchContextItems(mode),
+      { separator: true },
+      { label: '复制全文 Markdown', action: () => copyTextToClipboard(source.value, '已复制全文') },
+      { label: '复制章节正文', action: () => copyChapterBody() },
+      { label: '偏好设置', action: () => showSettings() }
+    ];
   }
 
-  items.push(
+  if (mode === 'mode-preview') {
+    return [
+      selection
+        ? { label: '复制选中内容', action: () => document.execCommand('copy') }
+        : { label: '复制全文', action: () => copyTextToClipboard(preview.innerText.trim() || getMarkdown(), '已复制全文') },
+      { label: '全选', action: () => selectCurrentModeContent() },
+      { separator: true },
+      { label: '查找', action: () => showFind(false) },
+      { separator: true },
+      ...modeSwitchContextItems(mode),
+      { separator: true },
+      { label: '复制章节正文', action: () => copyChapterBody() },
+      { label: '偏好设置', action: () => showSettings() }
+    ];
+  }
+
+  return [
+    ...textEditContextItems(),
     { label: '全选', action: () => selectCurrentModeContent() },
     { separator: true },
     { label: '查找', action: () => showFind(false) },
     { label: '替换', action: () => showFind(true) },
     { separator: true },
-    { label: '切换到 Live 模式', action: () => setMode('mode-live') },
-    { label: '切换到源码模式', action: () => setMode('mode-source') },
-    { label: '切换到阅读模式', action: () => setMode('mode-preview') },
+    ...modeSwitchContextItems(mode),
     { separator: true },
     { label: editorPreferences.focusMode ? '关闭专注模式' : '开启专注模式', action: () => toggleFocusMode() },
     { label: editorPreferences.typewriterMode ? '关闭打字机模式' : '开启打字机模式', action: () => toggleTypewriterMode() },
-    { separator: true },
-    { label: '复制章节正文', action: () => copyChapterBody() },
     { label: '偏好设置', action: () => showSettings() }
-  );
+  ];
+}
 
-  showContextMenu(x, y, items);
-  return true;
+function textEditContextItems() {
+  return [
+    { label: '剪切', action: () => document.execCommand('cut') },
+    { label: '复制', action: () => document.execCommand('copy') },
+    { label: '粘贴', action: () => document.execCommand('paste') }
+  ];
+}
+
+function modeSwitchContextItems(current) {
+  const items = [];
+  if (current !== 'mode-live') {
+    items.push({ label: '切换到 Live 模式', action: () => setMode('mode-live') });
+  }
+  if (current !== 'mode-source') {
+    items.push({ label: '切换到源码模式', action: () => setMode('mode-source') });
+  }
+  if (current !== 'mode-preview') {
+    items.push({ label: '切换到阅读模式', action: () => setMode('mode-preview') });
+  }
+  return items;
 }
 
 function selectCurrentModeContent() {
@@ -1480,6 +1541,8 @@ function tableCellRow(cell) {
 
 function blockContextItems(blockId) {
   return [
+    ...textEditContextItems(),
+    { separator: true },
     { label: '在上方插入段落', action: () => insertBlockNear(blockId, 'before') },
     { label: '在下方插入段落', action: () => insertBlockNear(blockId, 'after') },
     { label: '插入表格', action: () => insertTableNear(blockId) },
@@ -1492,14 +1555,20 @@ function blockContextItems(blockId) {
     { label: editorPreferences.focusMode ? '关闭专注模式' : '开启专注模式', action: () => toggleFocusMode() },
     { label: editorPreferences.typewriterMode ? '关闭打字机模式' : '开启打字机模式', action: () => toggleTypewriterMode() },
     { separator: true },
+    { label: '查找', action: () => showFind(false) },
+    { label: '替换', action: () => showFind(true) },
+    { separator: true },
     { label: '复制章节正文', action: () => copyChapterBody() },
-    { label: '复制块', action: () => duplicateBlock(blockId) },
+    { label: '复制块 Markdown', action: () => copyBlockMarkdown(blockId) },
+    { label: '复制块副本', action: () => duplicateBlock(blockId) },
     { label: '删除块', action: () => deleteBlock(blockId) }
   ];
 }
 
 function tableContextItems(blockId, section, row, col) {
   return [
+    ...textEditContextItems(),
+    { separator: true },
     { label: '在上方插入行', action: () => editTable(blockId, 'insert-row-before', row, col, section) },
     { label: '在下方插入行', action: () => editTable(blockId, 'insert-row-after', row, col, section) },
     { label: '删除当前行', action: () => editTable(blockId, 'delete-row', row, col, section) },
@@ -1511,6 +1580,9 @@ function tableContextItems(blockId, section, row, col) {
     { label: '当前列左对齐', action: () => editTable(blockId, 'align-left', row, col, section) },
     { label: '当前列居中', action: () => editTable(blockId, 'align-center', row, col, section) },
     { label: '当前列右对齐', action: () => editTable(blockId, 'align-right', row, col, section) },
+    { separator: true },
+    { label: '查找', action: () => showFind(false) },
+    { label: '替换', action: () => showFind(true) },
     { separator: true },
     { label: '复制章节正文', action: () => copyChapterBody() },
     { label: '复制表格 Markdown', action: () => copyBlockMarkdown(blockId) },

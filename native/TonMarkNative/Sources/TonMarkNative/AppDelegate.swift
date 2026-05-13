@@ -3,6 +3,8 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var editorWindowController: EditorWindowController?
     private let recentMenu = NSMenu(title: "Open Recent")
+    private let recentWorkspaceMenu = NSMenu(title: "Open Recent Workspace")
+    private var pendingOpenURLs: [URL] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMainMenu()
@@ -11,9 +13,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.recentFilesDidChange = { [weak self] in
             self?.rebuildRecentMenu()
         }
+        controller.recentWorkspacesDidChange = { [weak self] in
+            self?.rebuildRecentWorkspaceMenu()
+        }
         editorWindowController = controller
         rebuildRecentMenu()
+        rebuildRecentWorkspaceMenu()
         controller.showWindow(nil)
+        openPendingURLsIfNeeded()
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -22,7 +29,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        editorWindowController?.applicationShouldTerminate(sender) ?? .terminateNow
+        editorWindowController?.syncDockRecentWorkspaces()
+        return editorWindowController?.applicationShouldTerminate(sender) ?? .terminateNow
+    }
+
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        editorWindowController?.syncDockRecentWorkspaces()
+
+        let dockMenu = NSMenu(title: "TonMark")
+        let headerItem = NSMenuItem(title: "最近工作区", action: nil, keyEquivalent: "")
+        headerItem.isEnabled = false
+        dockMenu.addItem(headerItem)
+
+        guard let items = editorWindowController?.recentWorkspaceMenuItems(), !items.isEmpty else {
+            let emptyItem = NSMenuItem(title: "没有最近工作区", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            dockMenu.addItem(emptyItem)
+            dockMenu.addItem(.separator())
+            addAppMenuItem(to: dockMenu, title: "打开文件夹...", action: #selector(openWorkspace(_:)), keyEquivalent: "")
+            return dockMenu
+        }
+
+        items.forEach { item in
+            let menuItem = NSMenuItem(title: item.title, action: #selector(openRecentWorkspace(_:)), keyEquivalent: "")
+            menuItem.target = self
+            menuItem.representedObject = item.path
+            menuItem.toolTip = item.path
+            dockMenu.addItem(menuItem)
+        }
+
+        dockMenu.addItem(.separator())
+        addAppMenuItem(to: dockMenu, title: "打开文件夹...", action: #selector(openWorkspace(_:)), keyEquivalent: "")
+        return dockMenu
+    }
+
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        openURLsFromSystem([URL(fileURLWithPath: filename)])
+        return true
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        openURLsFromSystem(filenames.map { URL(fileURLWithPath: $0) })
+        sender.reply(toOpenOrPrint: .success)
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        openURLsFromSystem(urls)
     }
 
     @objc private func newDocument(_ sender: Any?) {
@@ -50,8 +102,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editorWindowController?.openRecentFile(path)
     }
 
+    @objc private func openRecentWorkspace(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        editorWindowController?.openRecentWorkspace(path)
+    }
+
     @objc private func clearRecentFiles(_ sender: Any?) {
         editorWindowController?.clearRecentFiles()
+    }
+
+    @objc private func clearRecentWorkspaces(_ sender: Any?) {
+        editorWindowController?.clearRecentWorkspaces()
     }
 
     @objc private func saveDocument(_ sender: Any?) {
@@ -177,6 +238,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let openRecentItem = NSMenuItem(title: "打开最近使用", action: nil, keyEquivalent: "")
         openRecentItem.submenu = recentMenu
         fileMenu.addItem(openRecentItem)
+        let openRecentWorkspaceItem = NSMenuItem(title: "打开最近文件夹", action: nil, keyEquivalent: "")
+        openRecentWorkspaceItem.submenu = recentWorkspaceMenu
+        fileMenu.addItem(openRecentWorkspaceItem)
         addAppMenuItem(to: fileMenu, title: "快速打开...", action: #selector(quickOpen(_:)), keyEquivalent: "p")
         addAppMenuItem(to: fileMenu, title: "打开文件夹...", action: #selector(openWorkspace(_:)), keyEquivalent: "o", modifiers: [.command, .shift])
         fileMenu.addItem(.separator())
@@ -298,5 +362,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let clearItem = NSMenuItem(title: "清除列表", action: #selector(clearRecentFiles(_:)), keyEquivalent: "")
         clearItem.target = self
         recentMenu.addItem(clearItem)
+    }
+
+    private func rebuildRecentWorkspaceMenu() {
+        recentWorkspaceMenu.removeAllItems()
+
+        guard let items = editorWindowController?.recentWorkspaceMenuItems(), !items.isEmpty else {
+            let emptyItem = NSMenuItem(title: "没有最近工作区", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            recentWorkspaceMenu.addItem(emptyItem)
+            return
+        }
+
+        items.forEach { item in
+            let menuItem = NSMenuItem(title: item.title, action: #selector(openRecentWorkspace(_:)), keyEquivalent: "")
+            menuItem.target = self
+            menuItem.representedObject = item.path
+            menuItem.toolTip = item.path
+            recentWorkspaceMenu.addItem(menuItem)
+        }
+
+        recentWorkspaceMenu.addItem(.separator())
+        let clearItem = NSMenuItem(title: "清除列表", action: #selector(clearRecentWorkspaces(_:)), keyEquivalent: "")
+        clearItem.target = self
+        recentWorkspaceMenu.addItem(clearItem)
+    }
+
+    private func openURLsFromSystem(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        if let controller = editorWindowController {
+            controller.openExternalURLs(urls)
+            controller.showWindow(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            pendingOpenURLs.append(contentsOf: urls)
+        }
+    }
+
+    private func openPendingURLsIfNeeded() {
+        guard !pendingOpenURLs.isEmpty else { return }
+        let urls = pendingOpenURLs
+        pendingOpenURLs.removeAll()
+        editorWindowController?.openExternalURLs(urls)
     }
 }

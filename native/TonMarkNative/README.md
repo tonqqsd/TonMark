@@ -1,17 +1,14 @@
-# TonMark
+# TonMark Native
 
-TonMark is a native macOS Markdown writing app built with Swift Package Manager, AppKit, WebKit, and a local web editor surface. It focuses on workspace-based long-form writing, quick navigation, full-text search, theme switching, snapshots, and export.
+TonMark Native is the macOS application package for [TonMark](../../README.md): a local-first Markdown workspace built with Swift Package Manager, AppKit, WebKit, and a bundled web editor surface.
 
-## Features
+## What This Package Contains
 
-- Native macOS window, toolbar, sidebar, and file workspace.
-- Markdown editing with live preview behavior powered by `Resources/Web`.
-- Quick open, workspace search, document outline, and sortable file tree.
-- Light, dark, warm, and system-following editor themes.
-- HTML and PDF export for the current document.
-- Local document snapshots and snapshot history.
-- Workspace path validation and WebView file-access hardening in `TonMarkCore`.
-- Unit tests for path security and workspace boundary handling.
+- `Sources/TonMarkNative`: the native AppKit window, toolbar, sidebar, Dock menu, file opening, WebKit bridge, export, and workspace integration.
+- `Sources/TonMarkCore`: shared path-security and workspace boundary logic.
+- `Resources/Web`: the Markdown editor UI, themes, context menus, search panels, and rendering assets.
+- `Tests/TonMarkCoreTests`: XCTest and Swift Testing coverage for workspace path security.
+- `script`: repeatable build, test, app-bundle, and DMG packaging entrypoints.
 
 ## Requirements
 
@@ -23,76 +20,89 @@ TonMark is a native macOS Markdown writing app built with Swift Package Manager,
 ## Build
 
 ```bash
-cd TonMarkNative
 swift build
+```
+
+Build a release app bundle:
+
+```bash
+script/build_and_run.sh --release --no-launch
+```
+
+The app bundle is written to:
+
+```text
+dist/TonMark.app
 ```
 
 ## Test
 
 ```bash
-cd TonMarkNative
 swift test
 node --check Resources/Web/app.js
 ```
 
-You can also use the bundled test script:
+Or run the bundled test script:
 
 ```bash
-cd TonMarkNative
 script/test.sh
 ```
 
-## Run
-
-Build an unsigned local app bundle in `dist/` and launch it:
+## Run Locally
 
 ```bash
-cd TonMarkNative
 script/build_and_run.sh
 ```
 
-Build without launching:
+Useful variants:
 
 ```bash
-cd TonMarkNative
 script/build_and_run.sh --no-launch
+script/build_and_run.sh --verify
+script/build_and_run.sh --release
 ```
 
-Build, launch, and verify the process starts:
+## Package DMG
 
 ```bash
-cd TonMarkNative
-script/build_and_run.sh --verify
+script/package_dmg.sh
 ```
 
-## Project Structure
+This creates:
 
 ```text
-TonMarkNative/
-  Package.swift
-  Sources/
-    TonMarkNative/     macOS AppKit and WebKit application shell
-    TonMarkCore/       shared core logic and path security helpers
-  Resources/
-    AppIcon.icns
-    Web/               editor UI, styles, and bundled web dependencies
-  Tests/
-    TonMarkCoreTests/  unit tests for core behavior
-  Checks/
-    TonMarkCoreChecks/ small executable checks for core validation
-  script/
-    build_and_run.sh
-    test.sh
+dist/TonMark-0.2.0.dmg
+dist/TonMark-0.2.0.dmg.sha256
 ```
 
-## Repository Notes
+The package is ad-hoc signed for local distribution. A Developer ID certificate and notarization step can be added later for fully trusted public macOS distribution.
 
-Generated build output is intentionally excluded from version control:
+## Release Variables
+
+```bash
+TONMARK_VERSION=0.2.0 TONMARK_BUILD_NUMBER=2 script/package_dmg.sh
+```
+
+The same variables are respected by `script/build_and_run.sh`.
+
+## Quality Checks
+
+Before publishing a release, run:
+
+```bash
+swift build
+swift test
+node --check Resources/Web/app.js
+script/package_dmg.sh
+codesign --verify --deep --strict --verbose=2 dist/TonMark.app
+```
+
+## Notes
+
+Generated output is intentionally not tracked:
 
 - `.build/`
 - `.swiftpm/`
 - `dist/`
 - `.DS_Store`
-- local Xcode and IDE state
-
-Do not commit local packaged app bundles or downloaded installer images.
+- local DMG files
