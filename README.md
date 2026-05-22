@@ -9,6 +9,10 @@
 
 TonMark is a fast, local-first Markdown app for macOS. It combines a native AppKit shell with a polished WebKit editor, so you get real macOS windowing, toolbar, Dock behavior, file dialogs, and export, while keeping a flexible Markdown writing surface for long-form work.
 
+<p align="center">
+  <img src="native/TonMarkNative/Resources/AppIcon.png" alt="TonMark app icon" width="112">
+</p>
+
 ![TonMark workspace screenshot](docs/images/tonmark-main.png)
 
 ## Why TonMark
@@ -87,6 +91,8 @@ native/TonMarkNative/
   Sources/TonMarkNative/  native macOS app shell
   Sources/TonMarkCore/    shared path-security logic
   Resources/Web/          editor UI and bundled web assets
+  Resources/AppIcon.png   source image for the macOS app icon
+  Resources/AppIcon.icns  bundled macOS app icon
   Tests/                  XCTest and Swift Testing coverage
   script/                 build, test, and DMG packaging scripts
 docs/

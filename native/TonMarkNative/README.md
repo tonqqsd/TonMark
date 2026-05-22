@@ -7,6 +7,8 @@ TonMark Native is the macOS application package for [TonMark](../../README.md): 
 - `Sources/TonMarkNative`: the native AppKit window, toolbar, sidebar, Dock menu, file opening, WebKit bridge, export, and workspace integration.
 - `Sources/TonMarkCore`: shared path-security and workspace boundary logic.
 - `Resources/Web`: the Markdown editor UI, themes, context menus, search panels, and rendering assets.
+- `Resources/AppIcon.png`: the current 1024px source image for the macOS app icon.
+- `Resources/AppIcon.icns`: the generated icon bundle copied into `TonMark.app`.
 - `Tests/TonMarkCoreTests`: XCTest and Swift Testing coverage for workspace path security.
 - `script`: repeatable build, test, app-bundle, and DMG packaging entrypoints.
 
@@ -84,6 +86,12 @@ TONMARK_VERSION=0.2.0 TONMARK_BUILD_NUMBER=2 script/package_dmg.sh
 ```
 
 The same variables are respected by `script/build_and_run.sh`.
+
+## App Icon
+
+The checked-in icon source is `Resources/AppIcon.png`. `Resources/AppIcon.icns` is generated from that source and is the file consumed by `script/build_and_run.sh`.
+
+The current icon is intentionally minimal: a white macOS-style background and border, a graphite document mark, and a small blue writing accent. It contains no text, account data, screenshots, or local file paths.
 
 ## Quality Checks
 
